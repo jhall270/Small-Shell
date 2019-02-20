@@ -15,7 +15,7 @@ void expandVariables();
 void writePIDstring(char* pidString);
 void itoa(int n, char s[]);
 void reverse(char s[]);
-void printExitStatus(int childExitMethod);
+void printExitStatus(pid_t childPID, int childExitMethod);
 
 
 //GLOBAL VARIABLES
@@ -44,6 +44,15 @@ struct pidList{
 }
 ;
 
+//struct stores process exit info
+struct exit{
+    int isExit;
+    int exitStatus;
+    int isSignal;
+    int exitSignal;
+}
+;
+
 //global variable to store currently inputted command from user
 struct commandLine currCommand;
 struct commandArgs currArgs;
@@ -51,7 +60,14 @@ struct commandArgs currArgs;
 //global variable list of background processes
 struct pidList backgroundPID;
 
+//global variable string storing initial working directory
+char initCD[128];
 
+//global variable stores exit status of last completed foreground process
+struct exit lastExit;
+
+//global variable, stores 1/0 flag indicating whether background commands available/unavailable
+int backgroundAvailable;
 
 //this function initializes values and strings in the struct
 void initializeCurrCommand(){
@@ -78,23 +94,44 @@ void printCommandPieces(){
     return;
 }
 
+//function for testing
+void printCommandArgs(){
+    int i;
+    printf("command %s\n", currArgs.command);
+    printf("numArgs %i\n", currArgs.numArgs);
+    for(i=0; i<currArgs.numArgs; i++){
+        printf("arg %i %s\n", i, currArgs.args[i]);
+    }
 
-//source note: this function is based off of userinput_adv.c sample code
-void catchSIGINT(int signo)
-{
-  char* message = "SIGINT. Use CTRL-Z to Stop.\n";
-  write(STDOUT_FILENO, message, 28);
 }
+
+
+//function catches SIGSTP in parent process
+//toggles background process availability on/off
+void catchSIGTSTP(int signo)
+{
+    char* offMessage = "Entering foreground-only mode (& is now ignored)\n";
+    char* onMessage = "Exiting foreground-only mode\n";
+    
+    if(backgroundAvailable){
+        //turn background availability off
+        write(STDOUT_FILENO, offMessage, 50);
+        backgroundAvailable=0;
+    }
+    else{
+        //turn background availability on
+        write(STDOUT_FILENO, onMessage, 29);
+        backgroundAvailable=1;
+    }
+
+}
+
 //source note: this function is based off of userinput_adv.c sample code
 //returns 1 if user line matches pattern of a command
 //return 0 if it is blank line or commment (no command to execute)
+//performs initial interpretation of command, stores pieces in currCommand struct
 int readCommand()
 {
-    struct sigaction SIGINT_action = {0};
-    SIGINT_action.sa_handler = catchSIGINT;
-    sigfillset(&SIGINT_action.sa_mask);
-    //SIGINT_action.sa_flags = SA_RESTART;
-    sigaction(SIGINT, &SIGINT_action, NULL);
 
     int numCharsEntered = -5; // How many chars we entered
     int currChar = -5; // Tracks where we are when we print out every char
@@ -191,7 +228,7 @@ int readCommand()
     return 1;
 }
 
-//this function cleans up the strings in the currCommand struct
+//wrapper function -- makes calls to expandVariableInArray for all three command strings
 void expandVariables(){
 
     expandVariableInArray(currCommand.commandArgs);
@@ -368,15 +405,6 @@ void tokenizeArgs(){
 
 }
 
-void printCommandArgs(){
-    int i;
-    printf("command %s\n", currArgs.command);
-    printf("numArgs %i\n", currArgs.numArgs);
-    for(i=0; i<currArgs.numArgs; i++){
-        printf("arg %i %s\n", i, currArgs.args[i]);
-    }
-
-}
 
 
 //returns 1 if matches a built-in function name
@@ -414,7 +442,7 @@ void runChildProcess(){
         }
 
         //TEST INFO
-        printCommandPieces();
+        //printCommandPieces();
     }
 
 
@@ -456,7 +484,6 @@ void runChildProcess(){
     //set up NULL termination of arguments
     currArgs.args[currArgs.numArgs] = NULL;
     //try to execute command
-    printf("Executing command: %s\n",currArgs.command);
     execStatus = execvp(currArgs.command, currArgs.args);
 
     //check for error
@@ -480,8 +507,8 @@ void checkBackground(){
 
         //if process i has completed
         if(childPID_actual != 0){
-            printf("Process %d has finished\n",childPID_actual);
-            printExitStatus(childExitMethod);
+           // printf("Process %d has finished\n",childPID_actual);
+            printExitStatus(backgroundPID.processes[i], childExitMethod);
 
             //clean up array of processes, remove completed
             for(j=i; j<backgroundPID.count; j++){
@@ -497,36 +524,126 @@ void checkBackground(){
 }
 
 
-
-void printExitStatus(int childExitMethod){
+void printExitStatus(pid_t childPID, int childExitMethod){
     int exitStatus, termSignal; //store info on exited child process
 
     if(WIFEXITED(childExitMethod)){
-        printf("Process exited normally\n");
         exitStatus = WEXITSTATUS(childExitMethod);
-        printf("exit status was %d\n", exitStatus);
+        printf("background pid %d is done: exit value %d\n", childPID, childExitMethod);
     }
 
     if(WIFSIGNALED(childExitMethod)){
-        printf("Process terminated by signal\n");
         termSignal = WTERMSIG(childExitMethod);
-        printf("exit term status was %d\n", termSignal);
+        printf("background pid %d is done: terminated by signal 15 %d\n", childPID, termSignal);
     }
 }
 
+
+void saveExitStatus(int childExitMethod){
+    int exitStatus, termSignal; //store info on exited child process
+
+    if(WIFEXITED(childExitMethod)){
+        exitStatus = WEXITSTATUS(childExitMethod);
+        lastExit.isExit=1;
+        lastExit.isSignal=0;
+        lastExit.exitStatus=exitStatus;
+        //printf("exit status was %d\n", exitStatus);
+    }
+
+    if(WIFSIGNALED(childExitMethod)){
+        termSignal = WTERMSIG(childExitMethod);
+        lastExit.isExit=0;
+        lastExit.isSignal=1;
+        lastExit.exitSignal=termSignal;
+        //printf("exit term status was %d\n", termSignal);
+    }
+}
+
+
+//this function runs the built-in cd command
+void updateCD(){
+    int status_chdir;
+    char* envString;
+
+    //if only command without args, set cwd to HOME
+    if(currArgs.numArgs == 1){
+        envString = getenv("HOME");
+        if(envString == NULL){
+            printf("Error finding HOME env var\n");
+            exit(1);
+        }
+        status_chdir = chdir(envString);
+        if(status_chdir != 0){
+            printf("error setting cd\n");
+        }        
+    }
+    //if cd command + 1 argument, set to arg
+    else if(currArgs.numArgs == 2){
+        status_chdir = chdir(currArgs.args[1]);
+        if(status_chdir != 0){
+            printf("error setting cd\n");
+        }
+    }
+    else{
+        printf("ERROR CD incorrect parameter combination\n");
+    }
+
+
+}
+
+//function kills all running child background processes 
+void killAllProcesses(){
+
+    return;
+}
 
 int main(){
     int isExecutable; // 0 if comment or empty, 1 if command
     pid_t spawnPID =-5;
     int childExitMethod = -5;
     int i;
+    char* status_getcwd;
+    int status_chdir;
 
     //initialize background pid list
     backgroundPID.count=0;
 
+    //store initial working directory
+    memset(initCD,'\0',sizeof(initCD));
+    status_getcwd = getcwd(initCD, sizeof(initCD));
+    if(status_getcwd == NULL){
+        printf("Error getting cwd\n");
+        exit(1);
+    }
+
+    //intitialize last exit status
+    lastExit.isExit=1;
+    lastExit.isSignal=0;
+    lastExit.exitStatus=0;
+
+    //initialize backgroundAvailability
+    backgroundAvailable=1;
+
+    //initialize parent signal handlers
+    struct sigaction SIGTSTP_action = {0}, ignore_action = {0}, default_action = {0};
+    
+    //function handles SIGSTP
+    SIGTSTP_action.sa_handler = catchSIGTSTP;
+    sigfillset(&SIGTSTP_action.sa_mask);
+    SIGTSTP_action.sa_flags=0;
+
+    //set up ignore and default
+    ignore_action.sa_handler = SIG_IGN;
+    default_action.sa_handler = SIG_DFL;
+
+    //parent ignores SIGINT
+    sigaction(SIGINT, &ignore_action, NULL);
+
+    //parent SIGSTP handled by function
+    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 
     //main loop for each user command
-    for(i=0; i<3; i++){
+    for(i=0; i<150; i++){
 
         //get command from user, stores raw command, args, input, output in global struct variable
         //return 1 if not comment or blank
@@ -536,15 +653,42 @@ int main(){
         if(isExecutable){
             //do variable expansion
             expandVariables();
-            printCommandPieces();
+            //printCommandPieces();
 
             tokenizeArgs();
-            printCommandArgs();
+            //printCommandArgs();
 
 
             //check for built-in functions
             if(isBuiltInFunction()){
-
+                //exit command
+                if(strcmp(currArgs.command,"exit")==0){
+                    //clean up child processes
+                    killAllProcesses();
+                    //restore original working directory
+                    status_chdir = chdir(initCD);
+                    if(status_chdir != 0){
+                        printf("error resetting cd\n");
+                    }
+                    //exit program loop
+                    break;
+                }
+                // cd command
+                else if(strcmp(currArgs.command,"cd")==0){
+                    updateCD();
+                }
+                // status command
+                else if(strcmp(currArgs.command,"status")==0){
+                    if(lastExit.isExit){
+                        printf("exit value %d\n",lastExit.exitStatus);
+                    }
+                    else if(lastExit.isSignal){
+                        printf("terminated by signal %d\n",lastExit.exitSignal);
+                    }
+                }
+                else{
+                    printf("Error interpreting built-in function\n");
+                }
             }
             else{
             //if not built-in command, fork
@@ -558,7 +702,14 @@ int main(){
                 }
                 else if(spawnPID == 0){
                     //child process
-                    printf("Child process -- begin child process set up\n");
+
+                    //child processes handle signals differently
+                    //child defuault action for SIGINT
+                    sigaction(SIGINT, &default_action, NULL);
+                    //child ignores SIGSTP
+                    sigaction(SIGTSTP, &ignore_action, NULL);
+
+
                     runChildProcess();                
 
                     exit(1);
@@ -567,21 +718,20 @@ int main(){
                     //parent process
                     //if background store child pid, if not background wait for child pid
 
-                    if(currCommand.isBackground == 0){
-                        printf("Parent process -- waiting for child to finish \n");
+                    if(currCommand.isBackground == 0 || backgroundAvailable == 0){
                         //foreground process, wait until child finishes
                         waitpid(spawnPID, &childExitMethod, 0);
 
-                        printExitStatus(childExitMethod);
-                        
-
+                        //exit status saved in global variable
+                        saveExitStatus(childExitMethod);
 
                     }
                     else{
-                        //background process
+                        //background process AND background processing is available
                         //store child pid to check  later
                         backgroundPID.processes[backgroundPID.count] = spawnPID;
                         backgroundPID.count++;
+                        printf("background pid is %d\n", spawnPID);
 
                     }
 
@@ -590,7 +740,7 @@ int main(){
             }
         }
         else{
-            printf("comment or empty line\n");
+            //printf("comment or empty line\n");
         }
         
 

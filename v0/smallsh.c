@@ -9,6 +9,8 @@
 void expandVariableInArray(char* arr);
 void expandVariables();
 void writePIDstring(char* pidString);
+void itoa(int n, char s[]);
+void reverse(char s[]);
 
 //GLOBAL VARIABLES
 
@@ -143,7 +145,7 @@ int readCommand()
     }
 
 
-    printCommandPieces();
+
 
     //remaining text between front and end is command with arguments
 
@@ -220,6 +222,11 @@ void expandVariableInArray(char* arr){
         }
     }
 
+    //updated string now in temp, copy back to original source array
+    memset(arr, '\0', sizeof(arr));
+    strcpy(arr, temp);
+
+
 }
 
 //gets pid and writes it to string passed as parameter
@@ -232,6 +239,45 @@ void writePIDstring(char* pidString){
     itoa(processID,pidString); //convert pid to string
 }
 
+
+
+//REFERENCE NOTE:  this function found at https://en.wikibooks.org/wiki/C_Programming/stdlib.h/itoa
+// which cites Kernighan and Ritchie's The C Programming Language, as original source
+/* reverse:  reverse string s in place */
+//used by itoa function
+void reverse(char s[])
+{
+    int i, j;
+    char c;
+
+    for (i = 0, j = strlen(s)-1; i<j; i++, j--) {
+        c = s[i];
+        s[i] = s[j];
+        s[j] = c;
+    }
+}
+ 
+//REFERENCE NOTE:  this function found at https://en.wikibooks.org/wiki/C_Programming/stdlib.h/itoa
+// which cites Kernighan and Ritchie's The C Programming Language, as original source
+ /* itoa:  convert n to characters in s */
+ // converts integer to ascii string
+void itoa(int n, char s[])
+{
+    int i, sign;
+
+    if ((sign = n) < 0)  /* record sign */
+        n = -n;          /* make n positive */
+    i = 0;
+    do {       /* generate digits in reverse order */
+        s[i++] = n % 10 + '0';   /* get next digit */
+    } while ((n /= 10) > 0);     /* delete it */
+    if (sign < 0)
+        s[i++] = '-';
+    s[i] = '\0';
+    reverse(s);
+}
+
+
 int main(){
     int isExecutable; // 0 if comment or empty, 1 if command
 
@@ -241,10 +287,10 @@ int main(){
 
     //
     if(isExecutable){
-        printCommandPieces();
-
         //do variable expansion
         expandVariables();
+
+        printCommandPieces();
 
         //check for built-in functions
 
