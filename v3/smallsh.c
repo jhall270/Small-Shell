@@ -465,8 +465,8 @@ void runChildProcess(){
     if(currCommand.isOutputRedir){
         //redirect output
 
-        //open output file
-        outfile = open(currCommand.outputRedir, O_WRONLY | O_CREAT | O_TRUNC, 0644);  
+        //open output file, create if not exists, 
+        outfile = open(currCommand.outputRedir, O_WRONLY | O_CREAT | O_TRUNC,  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);  
         if(outfile < 0){
             printf("Error opening file: %s\n", currCommand.outputRedir);
             exit(1);
@@ -724,6 +724,11 @@ int main(){
 
                         //exit status saved in global variable
                         saveExitStatus(childExitMethod);
+
+                        //foreground child process terminated by signal -- then message to user
+                        if(lastExit.isSignal){
+                            printf("terminated by signal %d\n", lastExit.exitSignal);
+                        }
 
                     }
                     else{
